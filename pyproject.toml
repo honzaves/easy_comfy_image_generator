@@ -1,6 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
 [project]
-name = "easy-comfy-image-generator"
-version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.9"
-dependencies = []
+name            = "comfy-generator"
+version         = "0.1.0"
+description     = "PyQt6 desktop front-end for ComfyUI / Flux with Ollama prompt enhancement and inpainting"
+readme          = "README.md"
+requires-python = ">=3.11"
+license         = { text = "MIT" }
+
+dependencies = [
+    "PyQt6>=6.6.0",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+comfy-generator = "comfy_generator.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["comfy_generator*"]
