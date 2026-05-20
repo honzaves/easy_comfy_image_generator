@@ -14,7 +14,7 @@ from pathlib import Path
 import requests
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from .config import COMFYUI_URL, OLLAMA_URL, OLLAMA_MODEL, ENHANCE_PROMPT
+from .config import COMFYUI_URL, OLLAMA_URL, OLLAMA_MODEL, enhance_prompt_for
 from .workflows import build_workflow, build_inpaint_workflow
 
 
@@ -64,17 +64,19 @@ class EnhanceWorker(QObject):
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
-    def __init__(self, description: str):
+    def __init__(self, description: str, model_key: str = "flux-schnell"):
         super().__init__()
         self.description = description
+        self.model_key   = model_key
 
     def run(self):
         try:
+            template = enhance_prompt_for(self.model_key)
             payload = {
                 "model": OLLAMA_MODEL,
                 "messages": [{
                     "role":    "user",
-                    "content": ENHANCE_PROMPT.format(description=self.description),
+                    "content": template.format(description=self.description),
                 }],
                 "stream":  False,
                 "options": {"temperature": 0.5, "num_predict": 400},
@@ -104,6 +106,7 @@ class GeneratorWorker(QObject):
         width: int,
         height: int,
         count: int = 1,
+        hires: bool = False,
     ):
         super().__init__()
         self.prompt    = prompt
@@ -111,13 +114,16 @@ class GeneratorWorker(QObject):
         self.width     = width
         self.height    = height
         self.count     = count
+        self.hires     = hires
         self._active   = True
         self._current  = 0
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     def _generate_one(self) -> tuple[bytes, str]:
-        wf  = build_workflow(self.prompt, self.model_key, self.width, self.height)
+        wf  = build_workflow(
+            self.prompt, self.model_key, self.width, self.height, hires=self.hires
+        )
         r   = requests.post(f"{COMFYUI_URL}/prompt", json={"prompt": wf}, timeout=15)
         r.raise_for_status()
         pid = r.json()["prompt_id"]

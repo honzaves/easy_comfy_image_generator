@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
         self._model               = "flux-schnell"
         self._res_index           = 6
         self._count               = 1
+        self._mode                = "warn"   # "direct" | "warn" | "hires"
         self._thread              = None
         self._worker              = None
         self._ethread             = None
@@ -118,7 +119,7 @@ class MainWindow(QMainWindow):
         col.setSpacing(2)
         sub = QLabel("IMAGE GENERATOR")
         sub.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px; font-weight: bold;")
-        title = QLabel("ComfyUI / Flux")
+        title = QLabel("ComfyUI / Flux · SD · SDXL")
         title.setStyleSheet(
             f"color: {TEXT_BRIGHT}; font-size: 20px; font-weight: 300;"
         )
@@ -138,8 +139,14 @@ class MainWindow(QMainWindow):
     # ── Left panel ─────────────────────────────────────────────────────────────
 
     def _make_left(self) -> QWidget:
+        # Scrollable so the (now longer) control stack fits on short windows.
+        scroll = QScrollArea()
+        scroll.setFixedWidth(370)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
         w = QWidget()
-        w.setFixedWidth(370)
         v = QVBoxLayout(w)
         v.setContentsMargins(20, 20, 20, 20)
         v.setSpacing(6)
@@ -154,9 +161,18 @@ class MainWindow(QMainWindow):
         self.pixel_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
         self._update_pixel_label()
         v.addWidget(self.pixel_label)
+        self.res_warn = QLabel("")
+        self.res_warn.setWordWrap(True)
+        self.res_warn.setStyleSheet(f"color: {WARN}; font-size: 10px;")
+        v.addWidget(self.res_warn)
         v.addSpacing(10)
 
-        v.addWidget(self._section_label("PROMPT TOKENS  (T5-XXL / 512 max)"))
+        v.addWidget(self._section_label("LARGE-IMAGE MODE"))
+        v.addWidget(self._make_mode_panel())
+        v.addSpacing(10)
+
+        self.token_section_label = self._section_label("PROMPT TOKENS  (T5-XXL / 512 max)")
+        v.addWidget(self.token_section_label)
         v.addWidget(self._make_token_panel())
         v.addSpacing(10)
 
@@ -168,7 +184,8 @@ class MainWindow(QMainWindow):
         self.prompt_field = QTextEdit()
         self.prompt_field.setObjectName("prompt_field")
         self.prompt_field.setPlaceholderText(
-            "Describe the image… then hit ✦ Enhance to let Ollama rewrite it for Flux."
+            "Describe the image… then hit ✦ Enhance to let Ollama rewrite it "
+            "for the selected model."
         )
         self.prompt_field.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.prompt_field.setMinimumHeight(100)
@@ -192,7 +209,8 @@ class MainWindow(QMainWindow):
         v.addWidget(self.elapsed_label)
 
         v.addStretch()
-        return w
+        scroll.setWidget(w)
+        return scroll
 
     def _make_action_buttons(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -207,7 +225,8 @@ class MainWindow(QMainWindow):
         self.enhance_btn.setObjectName("enhance_btn")
         self.enhance_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.enhance_btn.setToolTip(
-            "Send your description to Ollama and rewrite it as an optimised Flux prompt"
+            "Send your description to Ollama and rewrite it as an optimised prompt "
+            "for the selected model (natural language for Flux, keywords for SD/SDXL)"
         )
         self.enhance_btn.clicked.connect(self._on_enhance)
 
@@ -246,6 +265,43 @@ class MainWindow(QMainWindow):
         )
         v.addWidget(self.model_desc)
         self.model_group.buttonClicked.connect(self._on_model_changed)
+        return frame
+
+    def _make_mode_panel(self) -> QFrame:
+        """Three ways to handle resolutions above a checkpoint's native size."""
+        frame = QFrame()
+        frame.setObjectName("panel")
+        v = QVBoxLayout(frame)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(6)
+
+        self.mode_group = QButtonGroup(self)
+        modes = [
+            ("direct", "Direct",
+             "Render straight at the chosen resolution. No warnings."),
+            ("warn", "Direct + warn",
+             "Same as Direct, but flag resolutions above the model's native size."),
+            ("hires", "Hi-res fix",
+             "Render at native size, then upscale + refine to the chosen size."),
+        ]
+        for key, label, tip in modes:
+            rb = QRadioButton(label)
+            rb.setProperty("mode_key", key)
+            rb.setToolTip(tip)
+            if key == self._mode:
+                rb.setChecked(True)
+            self.mode_group.addButton(rb)
+            v.addWidget(rb)
+
+        self.mode_note = QLabel(
+            "Only affects SD/SDXL checkpoints — Flux always renders directly."
+        )
+        self.mode_note.setWordWrap(True)
+        self.mode_note.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: 10px; font-style: italic;"
+        )
+        v.addWidget(self.mode_note)
+        self.mode_group.buttonClicked.connect(self._on_mode_changed)
         return frame
 
     def _make_res_grid(self) -> QWidget:
@@ -476,7 +532,23 @@ class MainWindow(QMainWindow):
 
     def _on_model_changed(self, btn):
         self._model = btn.property("model_key")
-        self.model_desc.setText(MODELS[self._model]["desc"])
+        m = MODELS[self._model]
+        self.model_desc.setText(m["desc"])
+
+        # Jump to the model's native resolution preset, if one exists.
+        if m["arch"] != "flux":
+            nw, nh = m["native"]
+            for i, (_, pw, ph, _) in enumerate(RESOLUTIONS):
+                if (pw, ph) == (nw, nh):
+                    self._on_res_selected(i)
+                    break
+
+        self._update_token_panel()
+        self._update_res_warning()
+
+    def _on_mode_changed(self, btn):
+        self._mode = btn.property("mode_key")
+        self._update_res_warning()
 
     def _on_res_selected(self, idx: int):
         self._res_index = idx
@@ -485,26 +557,72 @@ class MainWindow(QMainWindow):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
         self._update_pixel_label()
+        self._update_res_warning()
+
+    def _token_limit(self) -> int:
+        """CLIP-L (77) for SD/SDXL checkpoints, T5-XXL (512) for Flux."""
+        return T5_LIMIT if MODELS[self._model]["arch"] == "flux" else CLIP_LIMIT
+
+    def _update_token_panel(self):
+        """Re-label and recompute the token panel for the selected model's arch."""
+        limit = self._token_limit()
+        if MODELS[self._model]["arch"] == "flux":
+            self.token_section_label.setText("PROMPT TOKENS  (T5-XXL / 512 max)")
+        else:
+            self.token_section_label.setText("PROMPT TOKENS  (CLIP-L / 77 max)")
+        self.token_bar.set_limit(limit)
+        self._on_prompt_changed()
+
+    def _update_res_warning(self):
+        """Show a note when the chosen resolution exceeds the model's native size."""
+        m = MODELS[self._model]
+        if m["arch"] == "flux":
+            self.res_warn.setText("")
+            return
+        _, w, h, _ = RESOLUTIONS[self._res_index]
+        nw, nh = m["native"]
+        over = w * h > nw * nh
+
+        if self._mode == "hires" and over:
+            self.res_warn.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
+            self.res_warn.setText(
+                f"Hi-res fix: render at {nw}×{nh}, then upscale to {w}×{h}."
+            )
+        elif self._mode == "warn" and over:
+            self.res_warn.setStyleSheet(f"color: {WARN}; font-size: 10px;")
+            self.res_warn.setText(
+                f"⚠  {w}×{h} is above this model's native {nw}×{nh} — expect "
+                f"duplication/cloning. Switch to Hi-res fix for clean results."
+            )
+        else:
+            self.res_warn.setText("")
 
     def _update_pixel_label(self):
         _, w, h, _ = RESOLUTIONS[self._res_index]
         self.pixel_label.setText(f"{w * h:,} pixels  ·  {w * h / 1_000_000:.1f} MP")
 
     def _on_prompt_changed(self):
-        text = self.prompt_field.toPlainText()
-        used = estimate_tokens(text)
-        rem  = T5_LIMIT - used
-        col  = token_color(used, T5_LIMIT)
+        text  = self.prompt_field.toPlainText()
+        limit = self._token_limit()
+        used  = estimate_tokens(text)
+        rem   = limit - used
+        col   = token_color(used, limit)
         self.token_used.setText(str(used))
         self.token_used.setStyleSheet(
             f"color: {col}; font-size: 20px; font-weight: bold;"
         )
-        self.token_remaining.setText(f"/ {T5_LIMIT}  ({max(0, rem)} remaining)")
+        self.token_remaining.setText(f"/ {limit}  ({max(0, rem)} remaining)")
         self.token_bar.set_used(used)
-        self.token_warn.setText(
-            f"⚠  exceeds CLIP-L limit ({CLIP_LIMIT} tokens) — T5 only"
-            if used > CLIP_LIMIT else ""
-        )
+        if MODELS[self._model]["arch"] == "flux":
+            self.token_warn.setText(
+                f"⚠  exceeds CLIP-L limit ({CLIP_LIMIT} tokens) — T5 only"
+                if used > CLIP_LIMIT else ""
+            )
+        else:
+            self.token_warn.setText(
+                f"⚠  exceeds CLIP-L limit ({CLIP_LIMIT} tokens) — extra text ignored"
+                if used > limit else ""
+            )
 
     # ── Enhance ────────────────────────────────────────────────────────────────
 
@@ -522,7 +640,7 @@ class MainWindow(QMainWindow):
         self.elapsed_label.setText("Sending to Ollama…")
 
         self._ethread = QThread()
-        self._eworker = EnhanceWorker(description)
+        self._eworker = EnhanceWorker(description, self._model)
         self._eworker.moveToThread(self._ethread)
         self._ethread.started.connect(self._eworker.run)
         self._eworker.finished.connect(self._on_enhance_done)
@@ -566,8 +684,12 @@ class MainWindow(QMainWindow):
 
         self._set_busy(True)
 
+        hires = self._mode == "hires" and MODELS[self._model]["arch"] != "flux"
+
         self._thread = QThread()
-        self._worker = GeneratorWorker(prompt, self._model, width, height, self._count)
+        self._worker = GeneratorWorker(
+            prompt, self._model, width, height, self._count, hires=hires
+        )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.status.connect(self._on_worker_status)

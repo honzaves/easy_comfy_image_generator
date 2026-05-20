@@ -45,10 +45,15 @@ class TokenBar(QWidget):
     def __init__(self):
         super().__init__()
         self.used = 0
+        self.limit = T5_LIMIT
         self.setFixedHeight(6)
 
     def set_used(self, used: int):
         self.used = used
+        self.update()
+
+    def set_limit(self, limit: int):
+        self.limit = max(1, limit)
         self.update()
 
     def paintEvent(self, _):
@@ -62,9 +67,9 @@ class TokenBar(QWidget):
         p.drawRoundedRect(0, 0, w, h, 3, 3)
 
         # Filled portion
-        fw = int(w * min(self.used / T5_LIMIT, 1.0))
+        fw = int(w * min(self.used / self.limit, 1.0))
         if fw > 0:
-            p.setBrush(QBrush(QColor(token_color(self.used, T5_LIMIT))))
+            p.setBrush(QBrush(QColor(token_color(self.used, self.limit))))
             p.drawRoundedRect(0, 0, fw, h, 3, 3)
 
 
